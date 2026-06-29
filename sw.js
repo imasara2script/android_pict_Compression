@@ -18,6 +18,9 @@ self.addEventListener('activate', event => {
 
 // 2. 通信をインターセプトして処理
 self.addEventListener('fetch', event => {
+  // ★重要: http または https 以外の特殊なリクエスト（拡張機能など）は完全に無視する
+  if (!event.request.url.startsWith('http')) return;
+  
   const url = new URL(event.request.url);
 
   // スクショ共有（Share Target）のPOSTリクエストをフック
