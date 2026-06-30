@@ -9,29 +9,23 @@
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
         body { background-color: #121212; color: #e0e0e0; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         
-        /* 上部ヘッダー（サイズ表示） */
         header { display: flex; justify-content: space-between; padding: 12px 16px; background: #1e1e1e; font-size: 14px; border-bottom: 1px solid #333; }
         .size-val { color: #00ffcc; font-weight: bold; }
 
-        /* 画像表示エリア */
         #image-container { flex: 1; width: 100%; background: #000; position: relative; overflow: hidden; cursor: grab; touch-action: none; }
-        #preview-img { position: absolute; transform-origin: 0 0; will-change: transform; pointer-events: none; }
+        #preview-img { position: absolute; transform-origin: 0 0; will-change: transform; pointer-events: none; display: none; }
 
-        /* 中央の固定トリミング枠 */
         #crop-box { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 280px; height: 280px; border: 2px dashed #00ffcc; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; display: none; }
 
-        /* 下部操作パネル */
         .controls { background: #1e1e1e; padding: 16px; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 12px; }
         .control-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
         label { font-size: 13px; color: #aaa; min-width: 80px; }
         input[type="range"] { flex: 1; accent-color: #00ffcc; }
         
-        /* 切替ボタン（トグル風） */
         .toggle-group { display: flex; background: #2a2a2a; border-radius: 6px; overflow: hidden; border: 1px solid #444; }
         .toggle-group button { background: transparent; border: none; color: #888; padding: 6px 16px; font-size: 13px; cursor: pointer; }
         .toggle-group button.active { background: #00ffcc; color: #121212; font-weight: bold; }
 
-        /* 各種アクションボタン */
         button.btn { background: #00ffcc; color: #121212; border: none; padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px; width: 100%; cursor: pointer; }
         button.btn:active { opacity: 0.8; }
         button.btn.secondary { background: #333; color: #e0e0e0; border: 1px solid #444; }
@@ -45,12 +39,15 @@
     </header>
 
     <div id="image-container">
+        <div id="start-message" style="position: absolute; color: #888; text-align: center; width: 100%; top: 40%; padding: 20px; box-sizing: border-box;">
+            <p style="font-size: 18px; margin-bottom: 10px; color: #00ffcc; font-weight: bold;">画像がありません</p>
+            <p style="font-size: 13px; line-height: 1.6;">スマホでスクリーンショットを撮った直後の<br>「共有」メニューからこのアプリを開いてください。</p>
+        </div>
         <img id="preview-img" alt="Preview">
-        <div id="crop-box"></div> <!-- トリミング用の固定中央枠 -->
+        <div id="crop-box"></div>
     </div>
 
     <div class="controls">
-        <!-- 元画像 / 圧縮画像 切り替え -->
         <div class="control-row">
             <label id="view-label">表示: 元画像</label>
             <div class="toggle-group">
@@ -59,19 +56,16 @@
             </div>
         </div>
 
-        <!-- 圧縮率スライダー -->
         <div class="control-row">
             <label id="quality-label">画質: 80%</label>
             <input type="range" id="quality-slider" min="0" max="100" value="80" oninput="onQualityChange(this.value)">
         </div>
 
-        <!-- 拡大倍率スライダー（手軽に細部比較するため） -->
         <div class="control-row">
             <label id="zoom-label">拡大: 1.0x</label>
             <input type="range" id="zoom-slider" min="1" max="8" step="0.1" value="1" oninput="onZoomChange(this.value)">
         </div>
 
-        <!-- トリミング・保存ボタン -->
         <div class="control-row" style="gap: 8px;">
             <button id="btn-crop-toggle" class="btn secondary" onclick="toggleCropMode()">トリミング開始</button>
             <button id="btn-download" class="btn" onclick="downloadImage()">保存 (WebP)</button>
@@ -79,13 +73,12 @@
     </div>
 
     <script>
-        let currentViewMode = false; // false = 元画像, true = 圧縮後
-        let originalImgElement = new Image(); // メモリ保持用の元画像
+        let currentViewMode = false;
+        let originalImgElement = new Image(); 
         let originalSize = 0;
         let compressedBlob = null;
         let compressedUrl = null;
 
-        // 画像の配置状態（ズーム・移動）
         let scale = 1, posX = 0, posY = 0, imgW = 0, imgH = 0;
         let isDragging = false, startX = 0, startY = 0;
         let isCropMode = false;
@@ -94,45 +87,87 @@
         const img = document.getElementById('preview-img');
         const cropBox = document.getElementById('crop-box');
 
-        // PWAサービスワーカー登録
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
 
-        // 起動時に共有メニューから画像が届いているか確認
+        // 共有イメージの受信と即時クリーンアップ
         window.addEventListener('DOMContentLoaded', async () => {
             const params = new URLSearchParams(window.location.search);
-            if (params.get('shared') === 'true') {
-                const cache = await caches.open('webp-compressor-v1');
-                const response = await cache.match('shared-image');
-                if (response) { loadImage(await response.blob()); }
+            const sharedId = params.get('shared');
+            if (sharedId) {
+                const cache = await caches.open('webp-compressor-v2');
+                const cacheKey = `shared-image-${sharedId}`;
+                const response = await cache.match(cacheKey);
+                if (response) {
+                    const blob = await response.blob();
+                    loadImage(blob);
+                    
+                    // ★防衛策: 読み込んだら即座にキャッシュから削除し、ストレージの圧迫を防ぐ（ゾンビ化防止）
+                    await cache.delete(cacheKey);
+                }
+                // URLの見た目を綺麗にし、リロード時の誤動作を防ぐ
+                history.replaceState({}, document.title, window.location.pathname);
             }
         });
 
-        // 画像の読み込み初期化
         function loadImage(blob) {
-            originalSize = blob.size;
-            document.getElementById('orig-size').textContent = (originalSize / 1024).toFixed(1) + ' KB';
-            
-            const url = URL.createObjectURL(blob);
-            originalImgElement.src = url;
-            originalImgElement.onload = () => {
-                // コンテナに収まる初期サイズ・位置の計算
-                const cW = container.clientWidth, cH = container.clientHeight;
-                const ratio = originalImgElement.naturalWidth / originalImgElement.naturalHeight;
-                if (cW / cH > ratio) { imgH = cH; imgW = cH * ratio; } else { imgW = cW; imgH = cW / ratio; }
-                
-                img.style.width = imgW + 'px';
-                img.style.height = imgH + 'px';
-                posX = (cW - imgW) / 2;
-                posY = (cH - imgH) / 2;
-                scale = 1;
-                document.getElementById('zoom-slider').value = 1;
-                
-                updateTransform();
-                compress();
+            // ★防衛策: 古いメモリURLを解放（メモリリークの遮断）
+            if (originalImgElement.src && originalImgElement.src.startsWith('blob:')) {
+                URL.revokeObjectURL(originalImgElement.src);
+            }
+            if (compressedUrl) {
+                URL.revokeObjectURL(compressedUrl);
+                compressedUrl = null;
+            }
+
+            const initialUrl = URL.createObjectURL(blob);
+            const tempImg = new Image();
+            tempImg.src = initialUrl;
+            tempImg.onload = () => {
+                URL.revokeObjectURL(initialUrl); // 一時URLを即解放
+
+                // ★防衛策: OOM（メモリ不足）対策。4K超えの巨大画像は、最大長辺2560pxに自動安全リサイズ
+                const MAX_SIZE = 2560;
+                let w = tempImg.naturalWidth;
+                let h = tempImg.naturalHeight;
+                if (w > MAX_SIZE || h > MAX_SIZE) {
+                    if (w > h) { h = Math.round((h * MAX_SIZE) / w); w = MAX_SIZE; } 
+                    else { w = Math.round((w * MAX_SIZE) / h); h = MAX_SIZE; }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                canvas.getContext('2d').drawImage(tempImg, 0, 0, w, h);
+
+                canvas.toBlob((resizedBlob) => {
+                    originalSize = resizedBlob.size;
+                    document.getElementById('orig-size').textContent = (originalSize / 1024).toFixed(1) + ' KB';
+                    
+                    const url = URL.createObjectURL(resizedBlob);
+                    originalImgElement.src = url;
+                    originalImgElement.onload = () => {
+                        document.getElementById('start-message').style.display = 'none';
+                        img.style.display = 'block';
+
+                        const cW = container.clientWidth, cH = container.clientHeight;
+                        const ratio = originalImgElement.naturalWidth / originalImgElement.naturalHeight;
+                        if (cW / cH > ratio) { imgH = cH; imgW = cH * ratio; } else { imgW = cW; imgH = cW / ratio; }
+                        
+                        img.style.width = imgW + 'px';
+                        img.style.height = imgH + 'px';
+                        
+                        scale = 1;
+                        document.getElementById('zoom-slider').value = 1;
+                        posX = (cW - imgW) / 2;
+                        posY = (cH - imgH) / 2;
+                        
+                        updateTransform();
+                        compress();
+                    };
+                }, 'image/png');
             };
         }
 
-        // WebP圧縮コアロジック
         function compress() {
             if (!originalImgElement.src) return;
             const q = document.getElementById('quality-slider').value / 100;
@@ -143,7 +178,9 @@
             canvas.getContext('2d').drawImage(originalImgElement, 0, 0);
             
             canvas.toBlob((blob) => {
+                // ★防衛策: 圧縮のたびに古いURLを明示的に破棄（ガベージコレクションを徹底支援）
                 if (compressedUrl) URL.revokeObjectURL(compressedUrl);
+                
                 compressedBlob = blob;
                 compressedUrl = URL.createObjectURL(blob);
                 document.getElementById('comp-size').textContent = (blob.size / 1024).toFixed(1) + ' KB';
@@ -151,7 +188,6 @@
             }, 'image/webp', q);
         }
 
-        // 画面の表示（元画像 / 圧縮後）の切り替え
         function setViewMode(showCompressed) {
             currentViewMode = showCompressed;
             document.getElementById('btn-view-orig').classList.toggle('active', !showCompressed);
@@ -175,38 +211,46 @@
             updateTransform();
         }
 
-        // ドラッグ移動処理 (Pointer EventsでPC/スマホ両対応)
         container.addEventListener('pointerdown', e => {
             isDragging = true;
             startX = e.clientX - posX;
             startY = e.clientY - posY;
             container.setPointerCapture(e.pointerId);
         });
+        
         container.addEventListener('pointermove', e => {
             if (!isDragging) return;
             posX = e.clientX - startX;
             posY = e.clientY - startY;
             updateTransform();
         });
+        
         container.addEventListener('pointerup', e => {
             isDragging = false;
             container.releasePointerCapture(e.pointerId);
         });
 
         function updateTransform() {
+            // ★防衛策: 境界リミッターを実装。画像が画面外（宇宙）に消え去るのを完全に阻止
+            const cW = container.clientWidth, cH = container.clientHeight;
+            const currentW = imgW * scale, currentH = imgH * scale;
+
+            if (currentW <= cW) { posX = (cW - currentW) / 2; } 
+            else { if (posX > 0) posX = 0; if (posX < cW - currentW) posX = cW - currentW; }
+
+            if (currentH <= cH) { posY = (cH - currentH) / 2; } 
+            else { if (posY > 0) posY = 0; if (posY < cH - currentH) posY = cH - currentH; }
+
             img.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
         }
 
-        // トリミングモード切替 ＆ 実行
         function toggleCropMode() {
             if (!isCropMode) {
-                // トリミング枠を表示
                 isCropMode = true;
                 cropBox.style.display = 'block';
                 document.getElementById('btn-crop-toggle').textContent = 'ココを切り抜く（確定）';
                 document.getElementById('btn-crop-toggle').style.background = '#ff0055';
             } else {
-                // 切り抜き実行
                 executeCrop();
                 isCropMode = false;
                 cropBox.style.display = 'none';
@@ -218,34 +262,28 @@
         function executeCrop() {
             if (!originalImgElement.src) return;
 
-            // 画面上の中央枠の座標を取得
             const bRect = cropBox.getBoundingClientRect();
             const cRect = container.getBoundingClientRect();
             const bx = bRect.left - cRect.left;
             const by = bRect.top - cRect.top;
 
-            // 画面上の画像サイズに対する、元の実ピクセル数の比率を計算
+            // ★防衛策: 画面上のサイズ（CSSピクセル）と実解像度の比率計算を1つの倍率に統合し、DPRによるズレを完全に排除
             const factorX = originalImgElement.naturalWidth / (imgW * scale);
             const factorY = originalImgElement.naturalHeight / (imgH * scale);
 
-            // 元画像上での切り抜き開始位置とサイズを逆算
             const sx = (bx - posX) * factorX;
             const sy = (by - posY) * factorY;
             const sw = bRect.width * factorX;
             const sh = bRect.height * factorY;
 
-            // Canvasに切り抜いた領域を描画
             const canvas = document.createElement('canvas');
             canvas.width = sw;
             canvas.height = sh;
             canvas.getContext('2d').drawImage(originalImgElement, sx, sy, sw, sh, 0, 0, sw, sh);
 
-            canvas.toBlob((blob) => {
-                loadImage(blob); // 切り抜いた画像を新しい「元画像」として再ロード
-            }, 'image/png'); // 画質劣化を防ぐため一旦PNGで再生成
+            canvas.toBlob((blob) => { loadImage(blob); }, 'image/png');
         }
 
-        // 保存（ダウンロード）処理
         function downloadImage() {
             if (!compressedBlob) return;
             const a = document.createElement('a');
