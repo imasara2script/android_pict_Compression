@@ -1,48 +1,45 @@
-const CACHE_NAME = 'webp-compressor-v5'; // バージョン更新
-const ASSETS = [
-  './index.html',
-  './manifest.json',
-  './icon.svg' // 実ファイルをキャッシュに含める
-];
+const ASSET_CACHE = 'webp-compressor-v6'; // バージョンを上げて古いキャッシュと決別
+const SHARED_CACHE = 'webp-shared-cache';   // 共有画像専用の隔離ボックス
 
-self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
+  e.waitUntil(caches.open(ASSET_CACHE).then((cache) => cache.addAll(['./', './index.html', './manifest.json'])));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.map((key) => {
+        if (key !== ASSET_CACHE && key !== SHARED_CACHE) return caches.delete(key);
+      })
+    ))
   );
 });
 
-self.addEventListener('activate', event => {
-  event.waitUntil(clients.claim());
-});
+self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
 
-self.addEventListener('fetch', event => {
-  if (!event.request.url.startsWith('http')) return;
-
-  const url = new URL(event.request.url);
-
-  // スクショ共有のPOSTリクエストをフック
-  if (event.request.method === 'POST' && url.pathname.endsWith('/share-target')) {
-    event.respondWith((async () => {
+  // 共有ターゲット受け取り（絶対URLによる固定キー保存）
+  if (url.pathname.endsWith('/share-target') && e.request.method === 'POST') {
+    e.respondWith((async () => {
       try {
-        const formData = await event.request.formData();
-        const file = formData.get('images');
-        
-        const cache = await caches.open(CACHE_NAME);
-        const id = Date.now();
-        const cacheKey = `shared-image-${id}`;
-        await cache.put(cacheKey, new Response(file));
-        
-        return Response.redirect(`./index.html?shared=${id}`, 303);
-      } catch (err) {
-        return new Response('共有画像の取得に失敗: ' + err.message, { status: 500 });
-      }
+        const formData = await e.request.formData();
+        const file = formData.get('image') || formData.get('file');
+        if (file) {
+          const sharedId = Date.now().toString();
+          const cache = await caches.open(SHARED_CACHE);
+          // オリジン起点で固定キーを作成
+          const cacheKey = new URL(`shared-image-${sharedId}`, self.location.origin).href;
+          await cache.put(cacheKey, new Response(file, { headers: { 'Content-Type': file.type } }));
+          return Response.redirect(`./?shared=${sharedId}`, 303);
+        }
+      } catch (err) { console.error(err); }
+      return Response.redirect('./', 303);
     })());
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then(response => {
-      return response || fetch(event.request).catch(() => new Response('Offline'));
-    })
+  e.respondWith(
+    fetch(e.request).catch(() => caches.match(e.request))
   );
 });
