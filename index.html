@@ -3,209 +3,119 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>オフラインWebP圧縮機 (超堅牢Dev環境)</title>
+    <title>オフラインWebP圧縮機 (要塞版)</title>
     <link rel="manifest" href="./manifest.json">
     <script>
+        const BOOTLOADER_VER = '2.0.0'; // 版数
+        const DB_NAME = 'FortressDB';
+        
         // ==========================================
-        // 📦 1. IndexedDB 管理クラス
+        // 1. 防衛メカニズム：版数管理と隔離用コンテナ
         // ==========================================
-        const DB_NAME = 'DevBootloaderDB';
-        const STORE_NAME = 'codes';
-        const KEY_NAME = 'current_html';
-
-        function openDB() {
-            return new Promise((resolve, reject) => {
-                const request = indexedDB.open(DB_NAME, 1);
-                request.onupgradeneeded = (e) => {
-                    e.target.result.createObjectStore(STORE_NAME);
-                };
-                request.onsuccess = (e) => resolve(e.target.result);
-                request.onerror = (e) => reject(e.target.error);
+        async function getSavedCode() {
+            const db = await new Promise(r => {
+                const req = indexedDB.open(DB_NAME, 1);
+                req.onupgradeneeded = (e) => e.target.result.createObjectStore('codes');
+                req.onsuccess = (e) => r(e.target.result);
             });
-        }
-
-        async function getLocalCode() {
-            try {
-                const db = await openDB();
-                return new Promise((resolve, reject) => {
-                    const transaction = db.transaction(STORE_NAME, 'readonly');
-                    const request = transaction.objectStore(STORE_NAME).get(KEY_NAME);
-                    request.onsuccess = () => resolve(request.result);
-                    request.onerror = () => reject(request.error);
-                });
-            } catch (e) {
+            const data = await new Promise(r => {
+                const tx = db.transaction('codes', 'readonly');
+                const req = tx.objectStore('codes').get('current_html');
+                req.onsuccess = () => r(req.result);
+            });
+            
+            // 版数チェック：不一致なら削除してnullを返す
+            if (data && data.version !== BOOTLOADER_VER) {
+                console.warn('版数不一致のためコードをパージします');
+                await clearStorage();
                 return null;
             }
+            return data ? data.code : null;
         }
 
-        async function saveLocalCode(code) {
-            const db = await openDB();
-            return new Promise((resolve, reject) => {
-                const transaction = db.transaction(STORE_NAME, 'readwrite');
-                const request = transaction.objectStore(STORE_NAME).put(code, KEY_NAME);
-                transaction.oncomplete = () => resolve();
-                transaction.onerror = () => reject(transaction.error);
+        async function saveCode(code) {
+            const db = await new Promise(r => {
+                const req = indexedDB.open(DB_NAME, 1);
+                req.onsuccess = (e) => r(e.target.result);
+            });
+            await new Promise(r => {
+                const tx = db.transaction('codes', 'readwrite');
+                tx.objectStore('codes').put({version: BOOTLOADER_VER, code}, 'current_html');
+                tx.oncomplete = r;
             });
         }
 
-        async function clearLocalCode() {
-            const db = await openDB();
-            return new Promise((resolve, reject) => {
-                const transaction = db.transaction(STORE_NAME, 'readwrite');
-                transaction.objectStore(STORE_NAME).delete(KEY_NAME);
-                transaction.oncomplete = () => resolve();
+        async function clearStorage() {
+            const db = await new Promise(r => {
+                const req = indexedDB.open(DB_NAME, 1);
+                req.onsuccess = (e) => r(e.target.result);
+            });
+            await new Promise(r => {
+                const tx = db.transaction('codes', 'readwrite');
+                tx.objectStore('codes').delete('current_html');
+                tx.oncomplete = r;
             });
         }
 
         // ==========================================
-        // 🚀 2. 動的DOMインジェクター (タイミングバグ修正)
+        // 2. 死活監視 (Dead-man's Switch)
+        // ==========================================
+        window.APP_INIT_SUCCESS = false;
+        setTimeout(() => {
+            if (!window.APP_INIT_SUCCESS) {
+                showRecoveryPanel('アプリの起動がタイムアウトしました。');
+            }
+        }, 5000);
+
+        function showRecoveryPanel(reason) {
+            const el = document.createElement('div');
+            el.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:#111; color:#ff4a4a; z-index:9999999; display:flex; flex-direction:column; align-items:center; justify-content:center;';
+            el.innerHTML = `<h2>⚠️ システム異常</h2><p>${reason}</p><button onclick="location.reload()" style="padding:15px; background:#444; color:#fff; border:none; border-radius:10px;">再起動して復旧</button>`;
+            document.body.appendChild(el);
+        }
+
+        // ==========================================
+        // 3. 隔離起動処理
         // ==========================================
         (async function boot() {
-            if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.register('./sw.js').catch(console.error);
-            }
+            if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
 
-            const customHtml = await getLocalCode();
-            if (!customHtml) return; // コードがなければ初期UIのまま
+            const code = await getSavedCode();
+            if (!code) return; // 初期UIを表示したまま
 
-            // 🛠️ 画面書き換えのコア処理
-            const injectTargetCode = () => {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(customHtml, 'text/html');
-                
-                document.head.innerHTML = doc.head.innerHTML;
-                document.body.innerHTML = doc.body.innerHTML;
+            const appRoot = document.getElementById('app-root');
+            const bootUI = document.getElementById('bootloader-ui');
 
-                // スクリプトの再評価
-                Array.from(document.querySelectorAll('script')).forEach(oldScript => {
-                    const newScript = document.createElement('script');
-                    Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
-                    newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-                    oldScript.parentNode.replaceChild(newScript, oldScript);
-                });
+            // DOMParserで中身をパースして #app-root に押し込む
+            const doc = new DOMParser().parseFromString(code, 'text/html');
+            appRoot.innerHTML = doc.body.innerHTML;
+            
+            // スタイル適用
+            const styles = doc.head.getElementsByTagName('style');
+            for (let s of styles) document.head.appendChild(s);
 
-                // 開発パネルを裏口挿入
-                injectDevPanel();
+            // スクリプト再評価 + 成功フラグセット
+            Array.from(appRoot.querySelectorAll('script')).forEach(s => {
+                const ns = document.createElement('script');
+                ns.textContent = s.textContent;
+                document.body.appendChild(ns);
+            });
 
-                // ライフサイクルイベントの再点火
-                setTimeout(() => {
-                    window.dispatchEvent(new Event('DOMContentLoaded'));
-                    window.dispatchEvent(new Event('load'));
-                }, 50);
-            };
-
-            // 🛡️ 【ここを修正】すでにDOM読み込みが完了（interactive/complete）していれば即実行！
-            if (document.readyState === 'loading') {
-                window.addEventListener('DOMContentLoaded', injectTargetCode);
-            } else {
-                injectTargetCode();
-            }
+            bootUI.style.display = 'none';
+            window.APP_INIT_SUCCESS = true;
         })();
-
-        // ==========================================
-        // 🛠️ 3. 開発用共通UI ＆ クリップボードフォールバック
-        // ==========================================
-        function injectDevPanel() {
-            if (document.getElementById('dev-panel')) return;
-
-            const panel = document.createElement('div');
-            panel.id = 'dev-panel';
-            panel.style.cssText = 'position:fixed; bottom:15px; right:15px; z-index:999999; opacity:0.4;';
-            panel.innerHTML = `<button id="update-code-btn" style="background:#111; color:#00ffcc; border:2px solid #00ffcc; padding:10px 16px; border-radius:6px; font-size:12px; font-weight:bold; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.5);">🛠️ コード更新 (長押しリセット)</button>`;
-            document.body.appendChild(panel);
-
-            panel.addEventListener('mouseenter', () => panel.style.opacity = '1');
-            panel.addEventListener('mouseleave', () => panel.style.opacity = '0.4');
-
-            const btn = document.getElementById('update-code-btn');
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                handleCodeUpdate();
-            });
-
-            let pressTimer;
-            btn.addEventListener('touchstart', () => {
-                pressTimer = setTimeout(async () => {
-                    if (confirm('【セーフモード】ローカルコードを削除し、工場出荷状態に戻しますか？')) {
-                        await clearLocalCode();
-                        sessionStorage.clear();
-                        location.reload();
-                    }
-                }, 5000);
-            });
-            btn.addEventListener('touchend', () => clearTimeout(pressTimer));
-        }
-
-        async function handleCodeUpdate() {
-            let codeText = '';
-            try {
-                if (navigator.clipboard && navigator.clipboard.readText) {
-                    codeText = await navigator.clipboard.readText();
-                }
-            } catch (err) {
-                console.warn('Clipboard read blocked');
-            }
-
-            if (!codeText || (!codeText.includes('<html') && !codeText.includes('<script'))) {
-                showFallbackModal();
-                return;
-            }
-
-            await applyNewCode(codeText);
-        }
-
-        function showFallbackModal() {
-            if (document.getElementById('fallback-modal')) return;
-
-            const modal = document.createElement('div');
-            modal.id = 'fallback-modal';
-            modal.style.cssText = 'position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:9999999; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:20px; box-sizing:border-box;';
-            modal.innerHTML = `
-                <div style="background:#222; width:100%; max-width:500px; padding:20px; border-radius:10px; border:1px solid #333; box-sizing:border-box;">
-                    <h3 style="color:#00ffcc; margin-top:0;">📋 手動コード貼り付け</h3>
-                    <p style="color:#aaa; font-size:12px;">PWAのセキュリティ制限により自動読み取りが拒否されました。以下にコードを貼り付けてください。</p>
-                    <textarea id="fallback-textarea" style="width:100%; height:200px; background:#111; color:#fff; border:1px solid #444; border-radius:6px; padding:10px; box-sizing:border-box; font-family:monospace; font-size:11px;" placeholder="ここにHTMLコードをペーストしてください..."></textarea>
-                    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">
-                        <button id="modal-cancel-btn" style="background:#444; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px;">キャンセル</button>
-                        <button id="modal-apply-btn" style="background:#00ffcc; color:#111; border:none; padding:8px 16px; border-radius:6px; font-weight:bold; cursor:pointer; font-size:12px;">適用して再起動</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-
-            document.getElementById('modal-cancel-btn').addEventListener('click', () => modal.remove());
-            document.getElementById('modal-apply-btn').addEventListener('click', async () => {
-                const text = document.getElementById('fallback-textarea').value;
-                if (!text) return alert('コードが入力されていません。');
-                modal.remove();
-                await applyNewCode(text);
-            });
-        }
-
-        async function applyNewCode(htmlText) {
-            if (!htmlText.includes('<html') && !htmlText.includes('<script')) {
-                alert('エラー: 有効なHTMLまたはScriptコードではありません。');
-                return;
-            }
-            await saveLocalCode(htmlText);
-            alert('ローカルコードをIndexedDBに格納しました！アプリを再起動します。');
-            location.reload();
-        }
     </script>
 </head>
-<body style="background:#121212; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; margin:0; text-align:center;">
+<body style="background:#121212; color:#fff; margin:0;">
+    <!-- 隔離コンテナ -->
+    <div id="app-root"></div>
 
-    <!-- 🏠 初期状態のUI -->
-    <div style="padding:20px; max-width:400px;">
-        <h2 style="color:#00ffcc; margin-bottom:10px;">オフラインWebP圧縮機<br><span style="font-size:16px; color:#fff;">(超堅牢開発ベース - v2)</span></h2>
-        <p style="color:#aaa; font-size:13px; line-height:1.6; text-align:left;">
-            【バグ修正版】タイミング問題を解決しました。<br><br>
-            もう一度、Geminiが出力した完全版コードをコピーし、右下のボタンから反映させてください。
-        </p>
+    <!-- 初期UI -->
+    <div id="bootloader-ui" style="height:100vh; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
+        <h2>オフラインWebP圧縮機 (要塞版)</h2>
+        <p>コードを更新してください。</p>
+        <button onclick="document.getElementById('update-btn').click()" style="padding:10px; border-radius:5px;">更新モード</button>
     </div>
-
-    <script>
-        injectDevPanel();
-    </script>
+    <div id="update-btn" style="display:none;" onclick="/* 後で追加 */"></div>
 </body>
 </html>
