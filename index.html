@@ -2,306 +2,214 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>WebP圧縮</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>オフラインWebP圧縮機 (超堅牢Dev環境)</title>
     <link rel="manifest" href="./manifest.json">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-        body { background-color: #121212; color: #e0e0e0; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        
-        header { display: flex; justify-content: space-between; padding: 12px 16px; background: #1e1e1e; font-size: 14px; border-bottom: 1px solid #333; }
-        .size-val { color: #00ffcc; font-weight: bold; }
+    <script>
+        // ==========================================
+        // 📦 1. IndexedDB 管理クラス (5MB制限の突破)
+        // ==========================================
+        const DB_NAME = 'DevBootloaderDB';
+        const STORE_NAME = 'codes';
+        const KEY_NAME = 'current_html';
 
-        #image-container { flex: 1; width: 100%; background: #000; position: relative; overflow: hidden; cursor: grab; touch-action: none; }
-        #preview-img { position: absolute; transform-origin: 0 0; will-change: transform; pointer-events: none; display: none; }
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, 1);
+                request.onupgradeneeded = (e) => {
+                    e.target.result.createObjectStore(STORE_NAME);
+                };
+                request.onsuccess = (e) => resolve(e.target.result);
+                request.onerror = (e) => reject(e.target.error);
+            });
+        }
 
-        #crop-box { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 280px; height: 280px; border: 2px dashed #00ffcc; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; display: none; }
+        async function getLocalCode() {
+            try {
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction(STORE_NAME, 'readonly');
+                    const request = transaction.objectStore(STORE_NAME).get(KEY_NAME);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            } catch (e) {
+                console.error('DB Read Error:', e);
+                return null;
+            }
+        }
 
-        .controls { background: #1e1e1e; padding: 16px; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 12px; }
-        .control-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        label { font-size: 13px; color: #aaa; min-width: 80px; }
-        input[type="range"] { flex: 1; accent-color: #00ffcc; }
-        
-        .toggle-group { display: flex; background: #2a2a2a; border-radius: 6px; overflow: hidden; border: 1px solid #444; }
-        .toggle-group button { background: transparent; border: none; color: #888; padding: 6px 16px; font-size: 13px; cursor: pointer; }
-        .toggle-group button.active { background: #00ffcc; color: #121212; font-weight: bold; }
+        async function saveLocalCode(code) {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const request = transaction.objectStore(STORE_NAME).put(code, KEY_NAME);
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error);
+            });
+        }
 
-        button.btn { background: #00ffcc; color: #121212; border: none; padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px; width: 100%; cursor: pointer; }
-        button.btn:active { opacity: 0.8; }
-        button.btn.secondary { background: #333; color: #e0e0e0; border: 1px solid #444; }
-    </style>
-</head>
-<body>
+        async function clearLocalCode() {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                transaction.objectStore(STORE_NAME).delete(KEY_NAME);
+                transaction.oncomplete = () => resolve();
+            });
+        }
 
-    <header>
-        <div>元: <span id="orig-size" class="size-val">---</span></div>
-        <div>圧縮後: <span id="comp-size" class="size-val">---</span></div>
-    </header>
+        // ==========================================
+        // 🚀 2. 動的DOMインジェクター (document.writeの排除)
+        // ==========================================
+        (async function boot() {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('./sw.js').catch(console.error);
+            }
 
-    <div id="image-container">
-        <div id="start-message" style="position: absolute; color: #888; text-align: center; width: 100%; top: 35%; padding: 20px; box-sizing: border-box;">
-            <p style="font-size: 18px; margin-bottom: 10px; color: #00ffcc; font-weight: bold;">画像がありません</p>
-            <p style="font-size: 13px; line-height: 1.6; margin-bottom: 24px;">スマホでスクリーンショットを撮った直後の<br>「共有」メニューからこのアプリを開いてください。</p>
+            const customHtml = await getLocalCode();
+            if (!customHtml) return; // コードがなければ初期UIへ
+
+            window.addEventListener('DOMContentLoaded', () => {
+                // 1. 文字列HTMLをパースして流し込む
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(customHtml, 'text/html');
+                
+                document.head.innerHTML = doc.head.innerHTML;
+                document.body.innerHTML = doc.body.innerHTML;
+
+                // 2. [重要] innerHTMLでは実行されない<script>を動的に再生成して評価
+                Array.from(document.querySelectorAll('script')).forEach(oldScript => {
+                    const newScript = document.createElement('script');
+                    Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
+                    newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+                    oldScript.parentNode.replaceChild(newScript, oldScript);
+                });
+
+                // 3. 開発用コントロールパネルを強制裏口挿入
+                injectDevPanel();
+
+                // 4. [イベント不発対策] すでにタイミングを逃したライフサイクルイベントを再点火！
+                setTimeout(() => {
+                    window.dispatchEvent(new Event('DOMContentLoaded'));
+                    window.dispatchEvent(new Event('load'));
+                }, 50);
+            });
+        })();
+
+        // ==========================================
+        // 🛠️ 3. 開発用共通UI ＆ クリップボードフォールバック
+        // ==========================================
+        function injectDevPanel() {
+            if (document.getElementById('dev-panel')) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'dev-panel';
+            panel.style.cssText = 'position:fixed; bottom:15px; right:15px; z-index:999999; opacity:0.4;';
+            panel.innerHTML = `<button id="update-code-btn" style="background:#111; color:#00ffcc; border:2px solid #00ffcc; padding:10px 16px; border-radius:6px; font-size:12px; font-weight:bold; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.5);">🛠️ コード更新 (長押しリセット)</button>`;
+            document.body.appendChild(panel);
+
+            panel.addEventListener('mouseenter', () => panel.style.opacity = '1');
+            panel.addEventListener('mouseleave', () => panel.style.opacity = '0.4');
+
+            const btn = document.getElementById('update-code-btn');
             
-            <!-- ★追加: インストール専用ボタン（条件クリア時のみ自動で出現） -->
-            <button id="btn-pwa-install" style="display: none; background: #00ffcc; color: #121212; border: none; padding: 12px 24px; border-radius: 20px; font-weight: bold; font-size: 14px; margin: 0 auto; cursor: pointer; box-shadow: 0 4px 15px rgba(0,255,204,0.4);" onclick="triggerPwaInstall()">
-                ➔ アプリとしてインストールする
-            </button>
-        </div>
-        <img id="preview-img" alt="Preview">
-        <div id="crop-box"></div>
-    </div>
+            // タップ：コード読み込み（自動 ➔ 手動フォールバック）
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                handleCodeUpdate();
+            });
 
-    <div class="controls">
-        <div class="control-row">
-            <label id="view-label">表示: 元画像</label>
-            <div class="toggle-group">
-                <button id="btn-view-orig" class="active" onclick="setViewMode(false)">元画像</button>
-                <button id="btn-view-comp" onclick="setViewMode(true)">圧縮後</button>
-            </div>
-        </div>
+            // 🛑 [誤爆対策] 5秒間長押しで安全にセーフモード（初期化）発動
+            let pressTimer;
+            btn.addEventListener('touchstart', () => {
+                pressTimer = setTimeout(async () => {
+                    if (confirm('【セーフモード】ローカルコードを削除し、工場出荷状態に戻しますか？')) {
+                        await clearLocalCode();
+                        sessionStorage.clear();
+                        location.reload();
+                    }
+                }, 5000); // 5秒
+            });
+            btn.addEventListener('touchend', () => clearTimeout(pressTimer));
+        }
 
-        <div class="control-row">
-            <label id="quality-label">画質: 80%</label>
-            <input type="range" id="quality-slider" min="0" max="100" value="80" oninput="onQualityChange(this.value)">
-        </div>
+        // クリップボード読み込みのコアロジック
+        async function handleCodeUpdate() {
+            let codeText = '';
+            
+            // 🛑 [権限対策] まずは自動読み取りに挑戦
+            try {
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    codeText = await navigator.clipboard.readText();
+                }
+            } catch (err) {
+                console.warn('自動クリップボード読み取りがブロックされました。手動入力に切り替えます。');
+            }
 
-        <div class="control-row">
-            <label id="zoom-label">拡大: 1.0x</label>
-            <input type="range" id="zoom-slider" min="1" max="8" step="0.1" value="1" oninput="onZoomChange(this.value)">
-        </div>
+            // 🛑 [フォールバック] 自動で取れなかった、または空なら手動入力ダイアログを強制表示
+            if (!codeText || (!codeText.includes('<html') && !codeText.includes('<script'))) {
+                showFallbackModal();
+                return;
+            }
 
-        <div class="control-row" style="gap: 8px;">
-            <button id="btn-crop-toggle" class="btn secondary" onclick="toggleCropMode()">トリミング開始</button>
-            <button id="btn-download" class="btn" onclick="downloadImage()">保存 (WebP)</button>
-        </div>
+            await applyNewCode(codeText);
+        }
+
+        // 手動貼り付け用モーダルの表示
+        function showFallbackModal() {
+            if (document.getElementById('fallback-modal')) return;
+
+            const modal = document.createElement('div');
+            modal.id = 'fallback-modal';
+            modal.style.cssText = 'position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:9999999; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:20px; box-sizing:border-box;';
+            modal.innerHTML = `
+                <div style="background:#222; width:100%; max-width:500px; padding:20px; border-radius:10px; border:1px solid #333; box-sizing:border-box;">
+                    <h3 style="color:#00ffcc; margin-top:0;">📋 手動コード貼り付け</h3>
+                    <p style="color:#aaa; font-size:12px;">PWAのセキュリティ制限により自動読み取りが拒否されました。以下にコードを貼り付けてください。</p>
+                    <textarea id="fallback-textarea" style="width:100%; height:200px; background:#111; color:#fff; border:1px solid #444; border-radius:6px; padding:10px; box-sizing:border-box; font-family:monospace; font-size:11px;" placeholder="ここにHTMLコードをペーストしてください..."></textarea>
+                    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">
+                        <button id="modal-cancel-btn" style="background:#444; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px;">キャンセル</button>
+                        <button id="modal-apply-btn" style="background:#00ffcc; color:#111; border:none; padding:8px 16px; border-radius:6px; font-weight:bold; cursor:pointer; font-size:12px;">適用して再起動</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            document.getElementById('modal-cancel-btn').addEventListener('click', () => modal.remove());
+            document.getElementById('modal-apply-btn').addEventListener('click', async () => {
+                const text = document.getElementById('fallback-textarea').value;
+                if (!text) return alert('コードが入力されていません。');
+                modal.remove();
+                await applyNewCode(text);
+            });
+        }
+
+        // コードの適用とバリデーション
+        async function applyNewCode(htmlText) {
+            if (!htmlText.includes('<html') && !htmlText.includes('<script')) {
+                alert('エラー: 有効なHTMLまたはScriptコードではありません。');
+                return;
+            }
+            await saveLocalCode(htmlText);
+            alert('ローカルコードをIndexedDBに格納しました！アプリを再起動します。');
+            location.reload();
+        }
+    </script>
+</head>
+<body style="background:#121212; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; margin:0; text-align:center;">
+
+    <!-- 🏠 初期状態のUI（初回起動時やリセット時に表示） -->
+    <div style="padding:20px; max-width:400px;">
+        <h2 style="color:#00ffcc; margin-bottom:10px;">オフラインWebP圧縮機<br><span style="font-size:16px; color:#fff;">(超堅牢開発ベース)</span></h2>
+        <p style="color:#aaa; font-size:13px; line-height:1.6; text-align:left;">
+            現代のセキュアなPWA環境に対応した開発システムです。<br><br>
+            Geminiが出力したコードをコピーし、右下のボタンを押して反映させてください。自動取得がブロックされた場合は、手動貼り付け画面が開きます。
+        </p>
     </div>
 
     <script>
-        let currentViewMode = false;
-        let originalImgElement = new Image(); 
-        let originalSize = 0;
-        let compressedBlob = null;
-        let compressedUrl = null;
-
-        let scale = 1, posX = 0, posY = 0, imgW = 0, imgH = 0;
-        let isDragging = false, startX = 0, startY = 0;
-        let isCropMode = false;
-
-        const container = document.getElementById('image-container');
-        const img = document.getElementById('preview-img');
-        const cropBox = document.getElementById('crop-box');
-
-        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
-
-        window.addEventListener('DOMContentLoaded', async () => {
-            const params = new URLSearchParams(window.location.search);
-            const sharedId = params.get('shared');
-            if (sharedId) {
-                const cache = await caches.open('webp-compressor-v4');
-                const cacheKey = `shared-image-${sharedId}`;
-                const response = await cache.match(cacheKey);
-                if (response) {
-                    const blob = await response.blob();
-                    loadImage(blob);
-                    await cache.delete(cacheKey);
-                }
-                history.replaceState({}, document.title, window.location.pathname);
-            }
-        });
-
-        function loadImage(blob) {
-            if (originalImgElement.src && originalImgElement.src.startsWith('blob:')) {
-                URL.revokeObjectURL(originalImgElement.src);
-            }
-            if (compressedUrl) {
-                URL.revokeObjectURL(compressedUrl);
-                compressedUrl = null;
-            }
-
-            const initialUrl = URL.createObjectURL(blob);
-            const tempImg = new Image();
-            tempImg.src = initialUrl;
-            tempImg.onload = () => {
-                URL.revokeObjectURL(initialUrl);
-
-                const MAX_SIZE = 2560;
-                let w = tempImg.naturalWidth;
-                let h = tempImg.naturalHeight;
-                if (w > MAX_SIZE || h > MAX_SIZE) {
-                    if (w > h) { h = Math.round((h * MAX_SIZE) / w); w = MAX_SIZE; } 
-                    else { w = Math.round((w * MAX_SIZE) / h); h = MAX_SIZE; }
-                }
-
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                canvas.getContext('2d').drawImage(tempImg, 0, 0, w, h);
-
-                canvas.toBlob((resizedBlob) => {
-                    originalSize = resizedBlob.size;
-                    document.getElementById('orig-size').textContent = (originalSize / 1024).toFixed(1) + ' KB';
-                    
-                    const url = URL.createObjectURL(resizedBlob);
-                    originalImgElement.src = url;
-                    originalImgElement.onload = () => {
-                        document.getElementById('start-message').style.display = 'none';
-                        img.style.display = 'block';
-
-                        const cW = container.clientWidth, cH = container.clientHeight;
-                        const ratio = originalImgElement.naturalWidth / originalImgElement.naturalHeight;
-                        if (cW / cH > ratio) { imgH = cH; imgW = cH * ratio; } else { imgW = cW; imgH = cW / ratio; }
-                        
-                        img.style.width = imgW + 'px';
-                        img.style.height = imgH + 'px';
-                        
-                        scale = 1;
-                        document.getElementById('zoom-slider').value = 1;
-                        posX = (cW - imgW) / 2;
-                        posY = (cH - imgH) / 2;
-                        
-                        updateTransform();
-                        compress();
-                    };
-                }, 'image/png');
-            };
-        }
-
-        function compress() {
-            if (!originalImgElement.src) return;
-            const q = document.getElementById('quality-slider').value / 100;
-            
-            const canvas = document.createElement('canvas');
-            canvas.width = originalImgElement.naturalWidth;
-            canvas.height = originalImgElement.naturalHeight;
-            canvas.getContext('2d').drawImage(originalImgElement, 0, 0);
-            
-            canvas.toBlob((blob) => {
-                if (compressedUrl) URL.revokeObjectURL(compressedUrl);
-                compressedBlob = blob;
-                compressedUrl = URL.createObjectURL(blob);
-                document.getElementById('comp-size').textContent = (blob.size / 1024).toFixed(1) + ' KB';
-                updateScreenDisplay();
-            }, 'image/webp', q);
-        }
-
-        function setViewMode(showCompressed) {
-            currentViewMode = showCompressed;
-            document.getElementById('btn-view-orig').classList.toggle('active', !showCompressed);
-            document.getElementById('btn-view-comp').classList.toggle('active', showCompressed);
-            document.getElementById('view-label').textContent = showCompressed ? "表示: 圧縮後 (WebP)" : "表示: 元画像";
-            updateScreenDisplay();
-        }
-
-        function onQualityChange(val) {
-            document.getElementById('quality-label').textContent = `画質: ${val}%`;
-            compress();
-        }
-
-        function onZoomChange(val) {
-            scale = parseFloat(val);
-            document.getElementById('zoom-label').textContent = `拡大: ${scale.toFixed(1)}x`;
-            updateTransform();
-        }
-
-        container.addEventListener('pointerdown', e => {
-            isDragging = true;
-            startX = e.clientX - posX;
-            startY = e.clientY - posY;
-            container.setPointerCapture(e.pointerId);
-        });
-        container.addEventListener('pointermove', e => {
-            if (!isDragging) return;
-            posX = e.clientX - startX;
-            posY = e.clientY - startY;
-            updateTransform();
-        });
-        container.addEventListener('pointerup', e => {
-            isDragging = false;
-            container.releasePointerCapture(e.pointerId);
-        });
-
-        function updateTransform() {
-            const cW = container.clientWidth, cH = container.clientHeight;
-            const currentW = imgW * scale, currentH = imgH * scale;
-
-            if (currentW <= cW) { posX = (cW - currentW) / 2; } 
-            else { if (posX > 0) posX = 0; if (posX < cW - currentW) posX = cW - currentW; }
-
-            if (currentH <= cH) { posY = (cH - currentH) / 2; } 
-            else { if (posY > 0) posY = 0; if (posY < cH - currentH) posY = cH - currentH; }
-
-            img.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
-        }
-
-        function toggleCropMode() {
-            if (!isCropMode) {
-                isCropMode = true;
-                cropBox.style.display = 'block';
-                document.getElementById('btn-crop-toggle').textContent = 'ココを切り抜く（確定）';
-                document.getElementById('btn-crop-toggle').style.background = '#ff0055';
-            } else {
-                executeCrop();
-                isCropMode = false;
-                cropBox.style.display = 'none';
-                document.getElementById('btn-crop-toggle').textContent = 'トリミング開始';
-                document.getElementById('btn-crop-toggle').style.background = '';
-            }
-        }
-
-        function executeCrop() {
-            if (!originalImgElement.src) return;
-            const bRect = cropBox.getBoundingClientRect();
-            const cRect = container.getBoundingClientRect();
-            const bx = bRect.left - cRect.left;
-            const by = bRect.top - cRect.top;
-
-            const factorX = originalImgElement.naturalWidth / (imgW * scale);
-            const factorY = originalImgElement.naturalHeight / (imgH * scale);
-
-            const sx = (bx - posX) * factorX;
-            const sy = (by - posY) * factorY;
-            const sw = bRect.width * factorX;
-            const sh = bRect.height * factorY;
-
-            const canvas = document.createElement('canvas');
-            canvas.width = sw;
-            canvas.height = sh;
-            canvas.getContext('2d').drawImage(originalImgElement, sx, sy, sw, sh, 0, 0, sw, sh);
-
-            canvas.toBlob((blob) => { loadImage(blob); }, 'image/png');
-        }
-
-        function downloadImage() {
-            if (!compressedBlob) return;
-            const a = document.createElement('a');
-            a.href = compressedUrl;
-            a.download = `compressed_${Date.now()}.webp`;
-            a.click();
-        }
-
-        // ★追加: Chromeの判定をキャッチして、画面内にインストールボタンを強制表示するロジック
-        let deferredPrompt;
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault(); // 標準のミニバナーを阻止
-            deferredPrompt = e;  // イベントをキープ
-            
-            // ボタンを画面に出現させる
-            const installBtn = document.getElementById('btn-pwa-install');
-            if (installBtn) installBtn.style.display = 'block';
-        });
-
-        function triggerPwaInstall() {
-            if (!deferredPrompt) return;
-            deferredPrompt.prompt(); // インストールダイアログを直接ポップアップ
-            deferredPrompt.userChoice.then((choiceResult) => {
-                if (choiceResult.outcome === 'accepted') {
-                    const installBtn = document.getElementById('btn-pwa-install');
-                    if (installBtn) installBtn.style.display = 'none';
-                }
-                deferredPrompt = null;
-            });
-        }
+        // 初回起動時にもコントロールパネルを生成
+        injectDevPanel();
     </script>
 </body>
 </html>
