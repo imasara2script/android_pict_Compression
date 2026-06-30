@@ -1,4 +1,4 @@
-const ASSET_CACHE = 'webp-compressor-v6'; // バージョンを上げて古いキャッシュと決別
+const ASSET_CACHE = 'webp-compressor-v7'; // 👑 v7に上げて古い裏方を強制全入れ替え
 const SHARED_CACHE = 'webp-shared-cache';   // 共有画像専用の隔離ボックス
 
 self.addEventListener('install', (e) => {
@@ -19,17 +19,21 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
 
-  // 共有ターゲット受け取り（絶対URLによる固定キー保存）
+  // 👑 共有ターゲット受け取りルート
   if (url.pathname.endsWith('/share-target') && e.request.method === 'POST') {
     e.respondWith((async () => {
       try {
         const formData = await e.request.formData();
-        const file = formData.get('image') || formData.get('file');
+        // ✨ 修正1: manifest.json の name: "images" と完全に一致させる
+        const file = formData.get('images'); 
+        
         if (file) {
           const sharedId = Date.now().toString();
           const cache = await caches.open(SHARED_CACHE);
-          // オリジン起点で固定キーを作成
-          const cacheKey = new URL(`shared-image-${sharedId}`, self.location.origin).href;
+          
+          // ✨ 修正2: フロントエンド（index.html）の検索パスと1文字違わず一致させる
+          const cacheKey = self.location.origin + '/android_pict_Compression/shared-image-' + sharedId;
+          
           await cache.put(cacheKey, new Response(file, { headers: { 'Content-Type': file.type } }));
           return Response.redirect(`./?shared=${sharedId}`, 303);
         }
