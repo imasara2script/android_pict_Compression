@@ -39,9 +39,14 @@
     </header>
 
     <div id="image-container">
-        <div id="start-message" style="position: absolute; color: #888; text-align: center; width: 100%; top: 40%; padding: 20px; box-sizing: border-box;">
+        <div id="start-message" style="position: absolute; color: #888; text-align: center; width: 100%; top: 35%; padding: 20px; box-sizing: border-box;">
             <p style="font-size: 18px; margin-bottom: 10px; color: #00ffcc; font-weight: bold;">画像がありません</p>
-            <p style="font-size: 13px; line-height: 1.6;">スマホでスクリーンショットを撮った直後の<br>「共有」メニューからこのアプリを開いてください。</p>
+            <p style="font-size: 13px; line-height: 1.6; margin-bottom: 24px;">スマホでスクリーンショットを撮った直後の<br>「共有」メニューからこのアプリを開いてください。</p>
+            
+            <!-- ★追加: インストール専用ボタン（条件クリア時のみ自動で出現） -->
+            <button id="btn-pwa-install" style="display: none; background: #00ffcc; color: #121212; border: none; padding: 12px 24px; border-radius: 20px; font-weight: bold; font-size: 14px; margin: 0 auto; cursor: pointer; box-shadow: 0 4px 15px rgba(0,255,204,0.4);" onclick="triggerPwaInstall()">
+                ➔ アプリとしてインストールする
+            </button>
         </div>
         <img id="preview-img" alt="Preview">
         <div id="crop-box"></div>
@@ -89,28 +94,23 @@
 
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
 
-        // 共有イメージの受信と即時クリーンアップ
         window.addEventListener('DOMContentLoaded', async () => {
             const params = new URLSearchParams(window.location.search);
             const sharedId = params.get('shared');
             if (sharedId) {
-                const cache = await caches.open('webp-compressor-v2');
+                const cache = await caches.open('webp-compressor-v4');
                 const cacheKey = `shared-image-${sharedId}`;
                 const response = await cache.match(cacheKey);
                 if (response) {
                     const blob = await response.blob();
                     loadImage(blob);
-                    
-                    // ★防衛策: 読み込んだら即座にキャッシュから削除し、ストレージの圧迫を防ぐ（ゾンビ化防止）
                     await cache.delete(cacheKey);
                 }
-                // URLの見た目を綺麗にし、リロード時の誤動作を防ぐ
                 history.replaceState({}, document.title, window.location.pathname);
             }
         });
 
         function loadImage(blob) {
-            // ★防衛策: 古いメモリURLを解放（メモリリークの遮断）
             if (originalImgElement.src && originalImgElement.src.startsWith('blob:')) {
                 URL.revokeObjectURL(originalImgElement.src);
             }
@@ -123,9 +123,8 @@
             const tempImg = new Image();
             tempImg.src = initialUrl;
             tempImg.onload = () => {
-                URL.revokeObjectURL(initialUrl); // 一時URLを即解放
+                URL.revokeObjectURL(initialUrl);
 
-                // ★防衛策: OOM（メモリ不足）対策。4K超えの巨大画像は、最大長辺2560pxに自動安全リサイズ
                 const MAX_SIZE = 2560;
                 let w = tempImg.naturalWidth;
                 let h = tempImg.naturalHeight;
@@ -178,9 +177,7 @@
             canvas.getContext('2d').drawImage(originalImgElement, 0, 0);
             
             canvas.toBlob((blob) => {
-                // ★防衛策: 圧縮のたびに古いURLを明示的に破棄（ガベージコレクションを徹底支援）
                 if (compressedUrl) URL.revokeObjectURL(compressedUrl);
-                
                 compressedBlob = blob;
                 compressedUrl = URL.createObjectURL(blob);
                 document.getElementById('comp-size').textContent = (blob.size / 1024).toFixed(1) + ' KB';
@@ -194,10 +191,6 @@
             document.getElementById('btn-view-comp').classList.toggle('active', showCompressed);
             document.getElementById('view-label').textContent = showCompressed ? "表示: 圧縮後 (WebP)" : "表示: 元画像";
             updateScreenDisplay();
-        }
-
-        function updateScreenDisplay() {
-            img.src = (currentViewMode && compressedUrl) ? compressedUrl : originalImgElement.src;
         }
 
         function onQualityChange(val) {
@@ -217,21 +210,18 @@
             startY = e.clientY - posY;
             container.setPointerCapture(e.pointerId);
         });
-        
         container.addEventListener('pointermove', e => {
             if (!isDragging) return;
             posX = e.clientX - startX;
             posY = e.clientY - startY;
             updateTransform();
         });
-        
         container.addEventListener('pointerup', e => {
             isDragging = false;
             container.releasePointerCapture(e.pointerId);
         });
 
         function updateTransform() {
-            // ★防衛策: 境界リミッターを実装。画像が画面外（宇宙）に消え去るのを完全に阻止
             const cW = container.clientWidth, cH = container.clientHeight;
             const currentW = imgW * scale, currentH = imgH * scale;
 
@@ -261,13 +251,11 @@
 
         function executeCrop() {
             if (!originalImgElement.src) return;
-
             const bRect = cropBox.getBoundingClientRect();
             const cRect = container.getBoundingClientRect();
             const bx = bRect.left - cRect.left;
             const by = bRect.top - cRect.top;
 
-            // ★防衛策: 画面上のサイズ（CSSピクセル）と実解像度の比率計算を1つの倍率に統合し、DPRによるズレを完全に排除
             const factorX = originalImgElement.naturalWidth / (imgW * scale);
             const factorY = originalImgElement.naturalHeight / (imgH * scale);
 
@@ -290,6 +278,29 @@
             a.href = compressedUrl;
             a.download = `compressed_${Date.now()}.webp`;
             a.click();
+        }
+
+        // ★追加: Chromeの判定をキャッチして、画面内にインストールボタンを強制表示するロジック
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault(); // 標準のミニバナーを阻止
+            deferredPrompt = e;  // イベントをキープ
+            
+            // ボタンを画面に出現させる
+            const installBtn = document.getElementById('btn-pwa-install');
+            if (installBtn) installBtn.style.display = 'block';
+        });
+
+        function triggerPwaInstall() {
+            if (!deferredPrompt) return;
+            deferredPrompt.prompt(); // インストールダイアログを直接ポップアップ
+            deferredPrompt.userChoice.then((choiceResult) => {
+                if (choiceResult.outcome === 'accepted') {
+                    const installBtn = document.getElementById('btn-pwa-install');
+                    if (installBtn) installBtn.style.display = 'none';
+                }
+                deferredPrompt = null;
+            });
         }
     </script>
 </body>
