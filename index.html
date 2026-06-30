@@ -7,7 +7,7 @@
     <link rel="manifest" href="./manifest.json">
     <script>
         // ==========================================
-        // 📦 1. IndexedDB 管理クラス (5MB制限の突破)
+        // 📦 1. IndexedDB 管理クラス
         // ==========================================
         const DB_NAME = 'DevBootloaderDB';
         const STORE_NAME = 'codes';
@@ -34,7 +34,6 @@
                     request.onerror = () => reject(request.error);
                 });
             } catch (e) {
-                console.error('DB Read Error:', e);
                 return null;
             }
         }
@@ -59,7 +58,7 @@
         }
 
         // ==========================================
-        // 🚀 2. 動的DOMインジェクター (document.writeの排除)
+        // 🚀 2. 動的DOMインジェクター (タイミングバグ修正)
         // ==========================================
         (async function boot() {
             if ('serviceWorker' in navigator) {
@@ -67,17 +66,17 @@
             }
 
             const customHtml = await getLocalCode();
-            if (!customHtml) return; // コードがなければ初期UIへ
+            if (!customHtml) return; // コードがなければ初期UIのまま
 
-            window.addEventListener('DOMContentLoaded', () => {
-                // 1. 文字列HTMLをパースして流し込む
+            // 🛠️ 画面書き換えのコア処理
+            const injectTargetCode = () => {
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(customHtml, 'text/html');
                 
                 document.head.innerHTML = doc.head.innerHTML;
                 document.body.innerHTML = doc.body.innerHTML;
 
-                // 2. [重要] innerHTMLでは実行されない<script>を動的に再生成して評価
+                // スクリプトの再評価
                 Array.from(document.querySelectorAll('script')).forEach(oldScript => {
                     const newScript = document.createElement('script');
                     Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
@@ -85,15 +84,22 @@
                     oldScript.parentNode.replaceChild(newScript, oldScript);
                 });
 
-                // 3. 開発用コントロールパネルを強制裏口挿入
+                // 開発パネルを裏口挿入
                 injectDevPanel();
 
-                // 4. [イベント不発対策] すでにタイミングを逃したライフサイクルイベントを再点火！
+                // ライフサイクルイベントの再点火
                 setTimeout(() => {
                     window.dispatchEvent(new Event('DOMContentLoaded'));
                     window.dispatchEvent(new Event('load'));
                 }, 50);
-            });
+            };
+
+            // 🛡️ 【ここを修正】すでにDOM読み込みが完了（interactive/complete）していれば即実行！
+            if (document.readyState === 'loading') {
+                window.addEventListener('DOMContentLoaded', injectTargetCode);
+            } else {
+                injectTargetCode();
+            }
         })();
 
         // ==========================================
@@ -112,14 +118,11 @@
             panel.addEventListener('mouseleave', () => panel.style.opacity = '0.4');
 
             const btn = document.getElementById('update-code-btn');
-            
-            // タップ：コード読み込み（自動 ➔ 手動フォールバック）
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 handleCodeUpdate();
             });
 
-            // 🛑 [誤爆対策] 5秒間長押しで安全にセーフモード（初期化）発動
             let pressTimer;
             btn.addEventListener('touchstart', () => {
                 pressTimer = setTimeout(async () => {
@@ -128,25 +131,21 @@
                         sessionStorage.clear();
                         location.reload();
                     }
-                }, 5000); // 5秒
+                }, 5000);
             });
             btn.addEventListener('touchend', () => clearTimeout(pressTimer));
         }
 
-        // クリップボード読み込みのコアロジック
         async function handleCodeUpdate() {
             let codeText = '';
-            
-            // 🛑 [権限対策] まずは自動読み取りに挑戦
             try {
                 if (navigator.clipboard && navigator.clipboard.readText) {
                     codeText = await navigator.clipboard.readText();
                 }
             } catch (err) {
-                console.warn('自動クリップボード読み取りがブロックされました。手動入力に切り替えます。');
+                console.warn('Clipboard read blocked');
             }
 
-            // 🛑 [フォールバック] 自動で取れなかった、または空なら手動入力ダイアログを強制表示
             if (!codeText || (!codeText.includes('<html') && !codeText.includes('<script'))) {
                 showFallbackModal();
                 return;
@@ -155,7 +154,6 @@
             await applyNewCode(codeText);
         }
 
-        // 手動貼り付け用モーダルの表示
         function showFallbackModal() {
             if (document.getElementById('fallback-modal')) return;
 
@@ -184,7 +182,6 @@
             });
         }
 
-        // コードの適用とバリデーション
         async function applyNewCode(htmlText) {
             if (!htmlText.includes('<html') && !htmlText.includes('<script')) {
                 alert('エラー: 有効なHTMLまたはScriptコードではありません。');
@@ -198,17 +195,16 @@
 </head>
 <body style="background:#121212; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; margin:0; text-align:center;">
 
-    <!-- 🏠 初期状態のUI（初回起動時やリセット時に表示） -->
+    <!-- 🏠 初期状態のUI -->
     <div style="padding:20px; max-width:400px;">
-        <h2 style="color:#00ffcc; margin-bottom:10px;">オフラインWebP圧縮機<br><span style="font-size:16px; color:#fff;">(超堅牢開発ベース)</span></h2>
+        <h2 style="color:#00ffcc; margin-bottom:10px;">オフラインWebP圧縮機<br><span style="font-size:16px; color:#fff;">(超堅牢開発ベース - v2)</span></h2>
         <p style="color:#aaa; font-size:13px; line-height:1.6; text-align:left;">
-            現代のセキュアなPWA環境に対応した開発システムです。<br><br>
-            Geminiが出力したコードをコピーし、右下のボタンを押して反映させてください。自動取得がブロックされた場合は、手動貼り付け画面が開きます。
+            【バグ修正版】タイミング問題を解決しました。<br><br>
+            もう一度、Geminiが出力した完全版コードをコピーし、右下のボタンから反映させてください。
         </p>
     </div>
 
     <script>
-        // 初回起動時にもコントロールパネルを生成
         injectDevPanel();
     </script>
 </body>
