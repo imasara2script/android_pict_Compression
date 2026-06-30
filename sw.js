@@ -1,7 +1,8 @@
-const CACHE_NAME = 'webp-compressor-v4'; // バージョン更新
+const CACHE_NAME = 'webp-compressor-v5'; // バージョン更新
 const ASSETS = [
   './index.html',
-  './manifest.json'
+  './manifest.json',
+  './icon.svg' // 実ファイルをキャッシュに含める
 ];
 
 self.addEventListener('install', event => {
