@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>オフラインWebP圧縮機 (プロ仕様ズーム＆トリミング版)</title>
+    <style>
+        body, #app-root {
+            background: #121212;
+            color: #fff;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            user-select: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #aaa;
+            border-bottom: 1px solid #222;
+            background: #121212;
+            z-index: 10;
+        }
+        .header span { color: #00ffcc; }
+        
+        .btn-debug-trigger {
+            background: #1a1a1a;
+            color: #00ffcc;
+            border: 1px solid #00ffcc;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-debug-trigger:active { background: #00ffcc; color: #111; }
+
+        .preview-area {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            position: relative;
+            overflow: hidden; 
+            min-height: 0; /* 👈 【超重要】中身の画像がどれだけ巨大化しても、このエリア自体が縦に伸びるのを絶対阻止する防壁 */
+        }
+        .status-text {
+            text-align: center;
+            color: #00ffcc;
+            font-size: 16px;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        .status-sub {
+            display: block;
+            color: #aaa;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        
+        #preview-image {
+            flex-shrink: 0;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            image-rendering: pixelated; 
+            image-rendering: crisp-edges;
+            touch-action: none;
+            cursor: grab;
+        }
+        #preview-image:active { cursor: grabbing; }
+        
+        .controls {
+            background: #1a1a1a;
+            padding: 15px;
+            border-top: 1px solid #2b2b2b;
+            box-sizing: border-box;
+            z-index: 10;
+        }
+        .control-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        .control-label { width: 90px; }
+        .btn-group { display: flex; background: #2a2a2a; border-radius: 6px; padding: 2px; }
+        .btn-tab {
+            background: transparent; border: none; color: #aaa;
+            padding: 6px 12px; font-size: 13px; border-radius: 4px; cursor: pointer;
+        }
+        .btn-tab.active { background: #00ffcc; color: #111; font-weight: bold; }
+        .slider { flex: 1; accent-color: #00ffcc; }
+        .btn-row { display: flex; gap: 10px; margin-top: 5px; }
+        .btn-action {
+            flex: 1; padding: 12px; border: none; border-radius: 6px;
+            font-size: 14px; font-weight: bold; cursor: pointer;
+        }
+        .btn-gray { background: #333; color: #aaa; }
+        .btn-primary { background: #00ffcc; color: #111; }
+
+        .debug-modal {
+            display: none;
+            position: absolute;
+            top: 5vh; left: 5vw; width: 90vw; height: 85vh;
+            background: rgba(18, 18, 18, 0.98);
+            border: 2px solid #00ffcc; border-radius: 8px;
+            z-index: 100; flex-direction: column; padding: 15px;
+            box-sizing: border-box; box-shadow: 0 0 20px rgba(0, 255, 204, 0.4);
+        }
+        .debug-modal-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
+            border-bottom: 1px solid #333; padding-bottom: 8px;
+        }
+        .debug-modal-title { margin: 0; color: #00ffcc; font-size: 15px; }
+        .btn-close-debug {
+            background: #ff4a4a; color: white; border: none;
+            padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: bold;
+        }
+        .debug-sw-box {
+            font-size: 11px; background: #222; padding: 8px; border-radius: 4px;
+            margin-bottom: 10px; border-left: 3px solid #00ffcc; word-break: break-all; color: #fff;
+        }
+        .debug-textarea {
+            flex: 1; background: #000; color: #00ffcc; font-family: monospace;
+            font-size: 11px; padding: 10px; border: 1px solid #333; border-radius: 4px;
+            resize: none; overflow: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div>元: <span id="info-original">---</span></div>
+        <button id="btn-debug-open" class="btn-debug-trigger">⚙️ システム情報</button>
+        <div>圧縮後: <span id="info-compressed">---</span></div>
+    </div>
+
+    <div class="preview-area">
+        <div id="status-message" class="status-text">
+            画像がありません
+            <span class="status-sub">スマホの「共有」メニューからこのアプリを開いてください。</span>
+        </div>
+        <img id="preview-image" style="display: none;">
+        <canvas id="main-canvas" style="display: none;"></canvas>
+    </div>
+
+    <div class="controls">
+        <div class="control-row">
+            <div class="control-label">表示:</div>
+            <div class="btn-group">
+                <button id="tab-orig" class="btn-tab active">元画像</button>
+                <button id="tab-comp" class="btn-tab">圧縮後</button>
+            </div>
+        </div>
+        <div class="control-row">
+            <div class="control-label">画質: <span id="val-quality">80.00%</span></div>
+            <input type="range" id="slider-quality" class="slider" min="0.01" max="100" step="0.01" value="80">
+        </div>
+        <div class="control-row">
+            <div class="control-label">ズーム: <span id="val-scale">1.0x</span></div>
+            <input type="range" id="slider-scale" class="slider" min="1.0" max="10.0" step="0.1" value="1.0">
+        </div>
+        <div class="btn-row">
+            <button id="btn-trim" class="btn-action btn-gray">トリミング開始</button>
+            <button id="btn-save" class="btn-action btn-primary">保存 (WebP)</button>
+        </div>
+    </div>
+
+    <div id="debug-modal" class="debug-modal">
+        <div class="debug-modal-header">
+            <h3 class="debug-modal-title">⚙️ 広域システムステータス</h3>
+            <button id="btn-debug-close" class="btn-close-debug">閉じる</button>
+        </div>
+        <div class="debug-sw-box">
+            <strong>🌐 サーバーの sw.js 最新定義:</strong><br>
+            <span id="debug-sw-line" style="color: #00ffcc;">通信中...</span>
+        </div>
+        <textarea id="debug-json-output" class="debug-textarea" readonly placeholder="データを構築中...タップで全選択できます"></textarea>
+    </div>
+
+    <script>
+        window.APP_INIT_SUCCESS = true;
+        let currentBlob = null; let originalImage = null; let isViewCompressed = false;
+        let originalUrl = null; let compressedUrl = null;
+
+        let imgPosX = 0; let imgPosY = 0;
+        let isDragging = false; let startX = 0; let startY = 0;
+
+        const canvas = document.getElementById('main-canvas');
+        const ctx = canvas.getContext('2d');
+        const previewImage = document.getElementById('preview-image');
+        const statusMessage = document.getElementById('status-message');
+        const sliderQuality = document.getElementById('slider-quality');
+        const valQuality = document.getElementById('val-quality');
+        const sliderScale = document.getElementById('slider-scale');
+        const valScale = document.getElementById('val-scale');
+        const btnSave = document.getElementById('btn-save');
+        const btnTrim = document.getElementById('btn-trim');
+        const infoOriginal = document.getElementById('info-original');
+        const infoCompressed = document.getElementById('info-compressed');
+        const tabOrig = document.getElementById('tab-orig');
+        const tabComp = document.getElementById('tab-comp');
+
+        const debugModal = document.getElementById('debug-modal');
+        const btnDebugOpen = document.getElementById('btn-debug-open');
+        const btnDebugClose = document.getElementById('btn-debug-close');
+        const debugJsonOutput = document.getElementById('debug-json-output');
+
+        btnDebugOpen.addEventListener('click', () => { debugModal.style.display = 'flex'; updateDebugDashboard(); });
+        btnDebugClose.addEventListener('click', () => { debugModal.style.display = 'none'; });
+        
+        tabOrig.addEventListener('click', () => { isViewCompressed = false; tabOrig.classList.add('active'); tabComp.classList.remove('active'); compressAndDisplay(); });
+        tabComp.addEventListener('click', () => { isViewCompressed = true; tabComp.classList.add('active'); tabOrig.classList.remove('active'); compressAndDisplay(); });
+        
+        sliderQuality.addEventListener('input', () => { valQuality.textContent = parseFloat(sliderQuality.value).toFixed(2) + '%'; compressAndDisplay(); });
+        sliderScale.addEventListener('input', () => { valScale.textContent = parseFloat(sliderScale.value).toFixed(1) + 'x'; compressAndDisplay(); });
+
+        // トリミング処理：ズーム・ドラッグ状態から正確に範囲を切り抜く
+        btnTrim.addEventListener('click', () => {
+            if (!originalImage) return;
+            const container = document.querySelector('.preview-area');
+            
+            const containerW = container.offsetWidth;
+            const containerH = container.offsetHeight;
+            
+            const imgRatio = originalImage.width / originalImage.height;
+            const containerRatio = containerW / containerH;
+            let baseW, baseH;
+            if (imgRatio > containerRatio) {
+                baseW = containerW; baseH = containerW / imgRatio;
+            } else {
+                baseH = containerH; baseW = containerH * imgRatio;
+            }
+            
+            const scale = parseFloat(sliderScale.value);
+            const imgW = baseW * scale;
+            const imgH = baseH * scale;
+            
+            const scaleFactor = originalImage.width / imgW;
+            const sx = (imgW / 2 - containerW / 2 - imgPosX) * scaleFactor;
+            const sy = (imgH / 2 - containerH / 2 - imgPosY) * scaleFactor;
+            const sw = containerW * scaleFactor;
+            const sh = containerH * scaleFactor;
+
+            const finalSx = Math.max(0, Math.min(originalImage.width, sx));
+            const finalSy = Math.max(0, Math.min(originalImage.height, sy));
+            const finalSw = Math.max(1, Math.min(originalImage.width - finalSx, sw));
+            const finalSh = Math.max(1, Math.min(originalImage.height - finalSy, sh));
+
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = finalSw; cropCanvas.height = finalSh;
+            cropCanvas.getContext('2d').drawImage(originalImage, finalSx, finalSy, finalSw, finalSh, 0, 0, finalSw, finalSh);
+            
+            cropCanvas.toBlob((blob) => {
+                sliderScale.value = 1.0; valScale.textContent = '1.0x';
+                imgPosX = 0; imgPosY = 0;
+                loadImage(blob);
+            }, 'image/jpeg', 1.0);
+        });
+
+        previewImage.addEventListener('pointerdown', (e) => {
+            if (parseFloat(sliderScale.value) === 1.0) return;
+            isDragging = true;
+            startX = e.clientX - imgPosX;
+            startY = e.clientY - imgPosY;
+            previewImage.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        });
+
+        previewImage.addEventListener('pointermove', (e) => {
+            if (!isDragging) return;
+            const container = document.querySelector('.preview-area');
+            const containerW = container.offsetWidth;
+            const containerH = container.offsetHeight;
+            
+            const imgRatio = originalImage.width / originalImage.height;
+            const containerRatio = containerW / containerH;
+            let baseW, baseH;
+            if (imgRatio > containerRatio) { baseW = containerW; baseH = containerW / imgRatio; }
+            else { baseH = containerH; baseW = containerH * imgRatio; }
+            
+            const scale = parseFloat(sliderScale.value);
+            const imgW = baseW * scale;
+            const imgH = baseH * scale;
+            
+            const maxW = Math.max(0, (imgW - containerW) / 2);
+            const maxH = Math.max(0, (imgH - containerH) / 2);
+            
+            imgPosX = Math.max(-maxW, Math.min(maxW, e.clientX - startX));
+            imgPosY = Math.max(-maxH, Math.min(maxH, e.clientY - startY));
+            previewImage.style.transform = `translate(${imgPosX}px, ${imgPosY}px)`;
+        });
+
+        const stopDrag = () => { isDragging = false; };
+        previewImage.addEventListener('pointerup', stopDrag);
+        previewImage.addEventListener('pointercancel', stopDrag);
+
+        function setStatusMessage(mainText, isError = false) {
+            statusMessage.innerHTML = isError ? `<span style="color:#ff4a4a">⚠️ ${mainText}</span>` : mainText;
+            statusMessage.style.display = mainText ? 'block' : 'none';
+            if (!mainText) previewImage.style.display = 'block';
+        }
+
+        async function loadImage(blob) {
+            if (!blob) return;
+            infoOriginal.textContent = (blob.size / 1024).toFixed(1) + ' KB';
+            if (originalUrl) URL.revokeObjectURL(originalUrl);
+            originalUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+                currentBlob = blob; originalImage = img;
+                imgPosX = 0; imgPosY = 0; previewImage.style.transform = 'none';
+                setStatusMessage(''); 
+                compressAndDisplay();
+            };
+            img.src = originalUrl;
+        }
+
+        function compressAndDisplay() {
+            if (!originalImage) return;
+            const scale = parseFloat(sliderScale.value);
+            const quality = parseFloat(sliderQuality.value) / 100;
+            
+            canvas.width = originalImage.width; canvas.height = originalImage.height;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(originalImage, 0, 0);
+            
+            canvas.toBlob((blob) => {
+                if (!blob) return;
+                infoCompressed.textContent = (blob.size / 1024).toFixed(1) + ' KB';
+                if (compressedUrl) URL.revokeObjectURL(compressedUrl);
+                compressedUrl = URL.createObjectURL(blob);
+                previewImage.src = isViewCompressed ? compressedUrl : originalUrl;
+
+                const container = document.querySelector('.preview-area');
+                if (scale > 1.0) {
+                    // ✨ 【バグ修正】ズーム時は上限のロックを解除して巨大化を完全に許可する
+                    previewImage.style.maxWidth = 'none';
+                    previewImage.style.maxHeight = 'none';
+
+                    const imgRatio = originalImage.width / originalImage.height;
+                    const containerRatio = container.offsetWidth / container.offsetHeight;
+                    let baseW, baseH;
+                    if (imgRatio > containerRatio) { baseW = container.offsetWidth; baseH = baseW / imgRatio; }
+                    else { baseH = container.offsetHeight; baseW = baseH * imgRatio; }
+                    previewImage.style.width = (baseW * scale) + 'px';
+                    previewImage.style.height = (baseH * scale) + 'px';
+                } else {
+                    // ✨ 1倍時はコンテナ内にきれいに収める
+                    previewImage.style.maxWidth = '100%';
+                    previewImage.style.maxHeight = '100%';
+                    previewImage.style.width = 'auto'; 
+                    previewImage.style.height = 'auto';
+                }
+                updateDebugDashboard();
+            }, 'image/webp', quality);
+        }
+
+        btnSave.addEventListener('click', () => {
+            if (!originalImage) return;
+            const quality = parseFloat(sliderQuality.value) / 100;
+            canvas.toBlob((blob) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `compressed_${Date.now()}.webp`;
+                a.click(); URL.revokeObjectURL(url);
+            }, 'image/webp', quality);
+        });
+
+        async function updateDebugDashboard() {
+            const state = {
+                quality: sliderQuality.value,
+                scale: sliderScale.value,
+                imgPos: `${imgPosX},${imgPosY}`
+            };
+            debugJsonOutput.value = JSON.stringify(state, null, 2);
+        }
+
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('shared')) {
+            caches.open('webp-shared-cache').then(c => c.match(window.location.origin + '/android_pict_Compression/shared-image-' + params.get('shared'))).then(r => r ? r.blob() : null).then(loadImage);
+        }
+    </script>
+</body>
+</html>
